@@ -1,19 +1,22 @@
 import { closeDatabase } from './src/db/index.ts'
 import { routes } from './src/server/routes.ts'
 
-const PORT = parseInt(process.env.PORT ?? '3000', 10)
+const PORT = Number.parseInt(process.env.PORT ?? '3000', 10)
 
 /**
  * Route handler type that accepts request and params
  */
-type RouteHandler = (req: Request, params: Record<string, string>) => Response | Promise<Response>
+type RouteHandler = (
+  req: Request,
+  params: Record<string, string>,
+) => Response | Promise<Response>
 
 /**
  * Simple router that matches routes defined in routes.ts
  */
 function matchRoute(
   method: string,
-  pathname: string
+  pathname: string,
 ): { handler: RouteHandler; params: Record<string, string> } | null {
   // First check for exact matches
   const exactKey = `${method} ${pathname}` as keyof typeof routes
@@ -63,7 +66,7 @@ const server = Bun.serve({
     const corsHeaders = {
       'Access-Control-Allow-Origin': '*',
       'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
     }
 
     // Handle preflight requests
@@ -77,7 +80,7 @@ const server = Bun.serve({
     if (!match) {
       return new Response(JSON.stringify({ error: 'Not found' }), {
         status: 404,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       })
     }
 
@@ -86,45 +89,56 @@ const server = Bun.serve({
 
       // Add CORS headers to response
       const newHeaders = new Headers(response.headers)
-      Object.entries(corsHeaders).forEach(([key, value]) => {
+      for (const [key, value] of Object.entries(corsHeaders)) {
         newHeaders.set(key, value)
-      })
+      }
 
       return new Response(response.body, {
         status: response.status,
-        headers: newHeaders
+        headers: newHeaders,
       })
     } catch (err) {
       console.error('Request error:', err)
       return new Response(JSON.stringify({ error: 'Internal server error' }), {
         status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders }
+        headers: { 'Content-Type': 'application/json', ...corsHeaders },
       })
     }
-  }
+  },
 })
 
-console.log(`
-Rapids API Key Service running at http://localhost:${server.port}
+console.clear()
+console.log(`Rapids API Key Service :${server.port}`)
 
-Available endpoints:
-  GET  /health              - Health check
-  POST /v1/keys             - Create a new API key
-  POST /v1/keys/validate    - Validate an API key
-  GET  /v1/keys             - List all API keys
-  GET  /v1/keys/stats       - Get API key statistics
-  GET  /v1/keys/:id         - Get API key by ID
-  PATCH /v1/keys/:id        - Update API key
-  POST /v1/keys/:id/revoke  - Revoke an API key
-  DELETE /v1/keys/:id       - Delete an API key
-  GET  /v1/protected        - Protected endpoint (requires API key)
-  POST /v1/rues             - Create rues (app_id, public_key)
-  GET  /v1/rues/:app_id     - Get rues by app_id
-  DELETE /v1/rues/:app_id   - Delete rues by app_id
-  POST /v1/shared-secret    - Create shared secret (private_key, public_key)
-  GET  /v1/shared-secret/:private_key  - Get by private_key
-  DELETE /v1/shared-secret/:private_key - Delete by private_key
-`)
+// if (process.env.NODE_ENV === 'development') {
+//   console.log(`
+// Rapids API Key Service running at http://localhost:${server.port}
+
+// Available endpoints:
+//   GET  /health              - Health check
+//   POST /v1/keys             - Create a new API key
+//   POST /v1/keys/validate    - Validate an API key
+//   GET  /v1/keys             - List all API keys
+//   GET  /v1/keys/stats       - Get API key statistics
+//   GET  /v1/keys/:id         - Get API key by ID
+//   PATCH /v1/keys/:id        - Update API key
+//   POST /v1/keys/:id/revoke  - Revoke an API key
+//   DELETE /v1/keys/:id       - Delete an API key
+//   GET  /v1/protected        - Protected endpoint (requires API key)
+//   POST /v1/apps             - Create app
+//   GET  /v1/apps             - List all apps
+//   GET  /v1/apps/:app_id     - Get app by app_id
+//   PATCH /v1/apps/:app_id    - Update app
+//   DELETE /v1/apps/:app_id   - Delete app
+//   POST /v1/shared-secret    - Create shared secret (private_key, public_key)
+//   GET  /v1/shared-secret/:private_key  - Get by private_key
+//   DELETE /v1/shared-secret/:private_key - Delete by private_key
+//   POST /v1/rues             - Create rues (app_id, public_key)
+//   POST /v1/rues/:rue_id     - Get rue by rue_id
+//   PATCH /v1/rues/:rue_id    - Update rue
+//   DELETE /v1/rues/:rue_id   - Delete rue
+// `)
+// }
 
 // Graceful shutdown
 process.on('SIGINT', () => {
