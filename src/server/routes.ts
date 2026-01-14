@@ -4,10 +4,11 @@ import type { ApiKeyConfig, ApiKeyListOptions } from '../types/index.ts'
 /**
  * JSON response helper
  */
+const apiKey = process.env.API_KEY
 function json<T>(data: T, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
   })
 }
 

@@ -2,6 +2,59 @@ import { closeDatabase } from './src/db/index.ts'
 import { routes } from './src/server/routes.ts'
 
 const PORT = Number.parseInt(process.env.PORT ?? '3000', 10)
+const API_KEY = process.env.API_KEY
+
+/**
+ * Extract API key from Authorization header
+ */
+function extractApiKey(req: Request): string | null {
+  const auth = req.headers.get('Authorization')
+  if (!auth) return null
+
+  // Support "Bearer <key>" and "ApiKey <key>" formats
+  const match = auth.match(/^(?:Bearer|ApiKey)\s+(.+)$/i)
+  return match?.[1] ?? null
+}
+
+/**
+ * Middleware to validate API key from .env
+ * Always requires API key to be set in environment
+ */
+function validateApiKey(req: Request): Response | null {
+  // API_KEY must be set in environment
+  if (!API_KEY) {
+    return new Response(
+      JSON.stringify({
+        error:
+          'API key authentication is required but API_KEY is not configured',
+      }),
+      {
+        status: 500,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }
+
+  const key = extractApiKey(req)
+  if (!key) {
+    return new Response(
+      JSON.stringify({ error: 'Missing API key in Authorization header' }),
+      {
+        status: 401,
+        headers: { 'Content-Type': 'application/json' },
+      },
+    )
+  }
+
+  if (key !== API_KEY) {
+    return new Response(JSON.stringify({ error: 'Invalid API key' }), {
+      status: 401,
+      headers: { 'Content-Type': 'application/json' },
+    })
+  }
+
+  return null // Auth passed
+}
 
 /**
  * Route handler type that accepts request and params
@@ -72,6 +125,25 @@ const server = Bun.serve({
     // Handle preflight requests
     if (method === 'OPTIONS') {
       return new Response(null, { status: 204, headers: corsHeaders })
+    }
+
+    // Skip API key validation for health check endpoint
+    const isHealthCheck = method === 'GET' && pathname === '/health'
+
+    // Validate API key for all routes except health check
+    if (!isHealthCheck) {
+      const authError = validateApiKey(req)
+      if (authError) {
+        // Add CORS headers to error response
+        const errorHeaders = new Headers(authError.headers)
+        for (const [key, value] of Object.entries(corsHeaders)) {
+          errorHeaders.set(key, value)
+        }
+        return new Response(authError.body, {
+          status: authError.status,
+          headers: errorHeaders,
+        })
+      }
     }
 
     // Find matching route
