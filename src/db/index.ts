@@ -1,15 +1,17 @@
 import { Database } from 'bun:sqlite'
 
-const DB_PATH = process.env.DB_PATH ?? 'rapids.db'
-
 /**
  * Initialize the SQLite database with the API keys schema
  */
 export function initializeDatabase(): Database {
-  const db = new Database(DB_PATH)
+  const dbPath = process.env.DB_PATH ?? 'rapids.db'
+  const db = new Database(dbPath)
 
   // Enable WAL mode for better concurrent access
   db.run('PRAGMA journal_mode = WAL')
+  db.run('PRAGMA foreign_keys = ON')
+  db.run('PRAGMA synchronous = NORMAL')
+  db.run('PRAGMA busy_timeout = 5000')
 
   // Create the api_keys table
   db.run(`
@@ -48,6 +50,30 @@ export function initializeDatabase(): Database {
       FOREIGN KEY (key_id) REFERENCES api_keys(id) ON DELETE CASCADE
     )
   `)
+
+  // Create applications table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS apps (
+      app_id TEXT PRIMARY KEY,
+      name TEXT NOT NULL,
+      public_key TEXT NOT NULL,
+      private_key TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.run('CREATE INDEX IF NOT EXISTS idx_apps_created_at ON apps(created_at)')
+
+  // Create shared secrets table
+  db.run(`
+    CREATE TABLE IF NOT EXISTS shared_secrets (
+      private_key TEXT PRIMARY KEY,
+      public_key TEXT NOT NULL,
+      created_at INTEGER NOT NULL
+    )
+  `)
+  db.run(
+    'CREATE INDEX IF NOT EXISTS idx_shared_secrets_created_at ON shared_secrets(created_at)',
+  )
 
   return db
 }

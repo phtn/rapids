@@ -160,6 +160,8 @@ Use the `Authorization` header with either format:
 - `Bearer <api-key>`
 - `ApiKey <api-key>`
 
+All endpoints except `GET /health` also require an **admin API key** from `API_KEY` in your environment.
+
 ## Configuration
 
 Create a `.env` file (Bun loads it automatically):
@@ -171,6 +173,8 @@ cp .env.example .env
 
 Environment variables:
 - `PORT` - Server port (default: 3000)
+- `API_KEY` - Required admin key to access all non-health endpoints
+- `CORS_ORIGINS` - Comma-separated allowed origins, or `*` (default: `*`)
 - `DB_PATH` - SQLite database path (default: rapids.db)
 
 ## Development

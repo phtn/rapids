@@ -1,14 +1,17 @@
-import { ApiKeyService } from '../services/api-key.service.ts'
+import {
+  ApiKeyConfigValidationError,
+  ApiKeyService,
+} from '../services/api-key.service.ts'
 import type { ApiKeyConfig, ApiKeyListOptions } from '../types/index.ts'
+import { extractAuthToken } from './auth.ts'
 
 /**
  * JSON response helper
  */
-const apiKey = process.env.API_KEY
 function json<T>(data: T, status = 200): Response {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', 'X-API-Key': apiKey },
+    headers: { 'Content-Type': 'application/json' },
   })
 }
 
@@ -33,22 +36,46 @@ async function parseBody<T>(req: Request): Promise<T | null> {
 }
 
 /**
- * Extract API key from Authorization header
+ * Parse non-negative integer query params with bounds checking.
  */
-function extractApiKey(req: Request): string | null {
-  const auth = req.headers.get('Authorization')
-  if (!auth) return null
+function parseNonNegativeInt(
+  value: string | null,
+  key: string,
+  defaultsTo: number,
+  max?: number,
+): number {
+  if (value === null) return defaultsTo
 
-  // Support "Bearer <key>" and "ApiKey <key>" formats
-  const match = auth.match(/^(?:Bearer|ApiKey)\s+(.+)$/i)
-  return match?.[1] ?? null
+  const trimmed = value.trim()
+  if (!/^\d+$/.test(trimmed)) {
+    throw new Error(
+      `Invalid "${key}" query parameter. Expected a non-negative integer.`,
+    )
+  }
+
+  const parsed = Number.parseInt(trimmed, 10)
+
+  if (max !== undefined) {
+    return Math.min(parsed, max)
+  }
+
+  return parsed
+}
+
+function parseBoolean(value: string | null, key: string): boolean | undefined {
+  if (value === null) return undefined
+  if (value === 'true') return true
+  if (value === 'false') return false
+  throw new Error(
+    `Invalid "${key}" query parameter. Expected "true" or "false".`,
+  )
 }
 
 /**
  * Middleware to validate API key for protected routes
  */
 async function requireAuth(req: Request): Promise<Response | null> {
-  const key = extractApiKey(req)
+  const key = extractAuthToken(req)
   if (!key) {
     return error('Missing API key in Authorization header', 401)
   }
@@ -102,6 +129,9 @@ export const routes = {
         201,
       )
     } catch (err) {
+      if (err instanceof ApiKeyConfigValidationError) {
+        return error(err.message, 400)
+      }
       console.error('Error creating API key:', err)
       return error('Failed to create API key', 500)
     }
@@ -144,17 +174,33 @@ export const routes = {
   'GET /v1/keys': (req: Request) => {
     const url = new URL(req.url)
 
-    const options: ApiKeyListOptions = {
-      isActive: url.searchParams.has('active')
-        ? url.searchParams.get('active') === 'true'
-        : undefined,
-      prefix: url.searchParams.get('prefix') ?? undefined,
-      includeExpired: url.searchParams.get('includeExpired') === 'true',
-      offset: Number.parseInt(url.searchParams.get('offset') ?? '0', 10),
-      limit: Math.min(
-        Number.parseInt(url.searchParams.get('limit') ?? '50', 10),
-        100,
-      ),
+    let options: ApiKeyListOptions
+    try {
+      options = {
+        isActive: parseBoolean(url.searchParams.get('active'), 'active'),
+        prefix: url.searchParams.get('prefix') ?? undefined,
+        includeExpired:
+          parseBoolean(
+            url.searchParams.get('includeExpired'),
+            'includeExpired',
+          ) ?? false,
+        offset: parseNonNegativeInt(
+          url.searchParams.get('offset'),
+          'offset',
+          0,
+        ),
+        limit: parseNonNegativeInt(
+          url.searchParams.get('limit'),
+          'limit',
+          50,
+          100,
+        ),
+      }
+    } catch (err) {
+      return error(
+        err instanceof Error ? err.message : 'Invalid query parameters',
+        400,
+      )
     }
 
     const keys = ApiKeyService.list(options)
@@ -222,6 +268,25 @@ export const routes = {
 
     if (!body) {
       return error('Invalid request body')
+    }
+
+    if (body.name !== undefined && typeof body.name !== 'string') {
+      return error('"name" must be a string')
+    }
+    if (
+      body.scopes !== undefined &&
+      (!Array.isArray(body.scopes) ||
+        body.scopes.some((scope) => typeof scope !== 'string'))
+    ) {
+      return error('"scopes" must be an array of strings')
+    }
+    if (
+      body.metadata !== undefined &&
+      (typeof body.metadata !== 'object' ||
+        body.metadata === null ||
+        Array.isArray(body.metadata))
+    ) {
+      return error('"metadata" must be an object')
     }
 
     let updated = false

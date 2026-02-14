@@ -22,26 +22,9 @@ export interface AppInput {
 }
 
 /**
- * Initialize the apps table
- */
-function ensureTable(): void {
-  const db = getDatabase()
-  db.run(`
-    CREATE TABLE IF NOT EXISTS apps (
-      app_id TEXT PRIMARY KEY,
-      name TEXT NOT NULL,
-      public_key TEXT NOT NULL,
-      private_key TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    )
-  `)
-}
-
-/**
  * Create a new app
  */
 export function createApp(input: AppInput): App {
-  ensureTable()
   const db = getDatabase()
   const now = Date.now()
   const appId = input.app_id ?? crypto.randomUUID()
@@ -66,7 +49,6 @@ export function createApp(input: AppInput): App {
  * Get app by app_id
  */
 export function getApp(appId: string): App | null {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare<
@@ -96,7 +78,6 @@ export function getApp(appId: string): App | null {
  * Update an app
  */
 export function updateApp(appId: string, input: Partial<AppInput>): App | null {
-  ensureTable()
   const db = getDatabase()
 
   const existing = getApp(appId)
@@ -133,7 +114,6 @@ export function updateApp(appId: string, input: Partial<AppInput>): App | null {
  * Delete app by app_id
  */
 export function deleteApp(appId: string): boolean {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare('DELETE FROM apps WHERE app_id = ?')
@@ -146,7 +126,6 @@ export function deleteApp(appId: string): boolean {
  * List all apps
  */
 export function listApps(): App[] {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare<

@@ -1,226 +1,257 @@
+import { loadConfig } from './src/config/env.ts'
 import { closeDatabase } from './src/db/index.ts'
+import { extractAuthToken, secureCompare } from './src/server/auth.ts'
 import { routes } from './src/server/routes.ts'
 
-const PORT = Number.parseInt(process.env.PORT ?? '3000', 10)
-const API_KEY = process.env.API_KEY
-
-/**
- * Extract API key from Authorization header
- */
-function extractApiKey(req: Request): string | null {
-  const auth = req.headers.get('Authorization')
-  if (!auth) return null
-
-  // Support "Bearer <key>" and "ApiKey <key>" formats
-  const match = auth.match(/^(?:Bearer|ApiKey)\s+(.+)$/i)
-  return match?.[1] ?? null
-}
-
-/**
- * Middleware to validate API key from .env
- * Always requires API key to be set in environment
- */
-function validateApiKey(req: Request): Response | null {
-  // API_KEY must be set in environment
-  if (!API_KEY) {
-    return new Response(
-      JSON.stringify({
-        error:
-          'API key authentication is required but API_KEY is not configured',
-      }),
-      {
-        status: 500,
-        headers: { 'Content-Type': 'application/json' },
-      },
-    )
-  }
-
-  const key = extractApiKey(req)
-  if (!key) {
-    return new Response(
-      JSON.stringify({ error: 'Missing API key in Authorization header' }),
-      {
-        status: 401,
-        headers: { 'Content-Type': 'application/json' },
-      },
-    )
-  }
-
-  if (key !== API_KEY) {
-    return new Response(JSON.stringify({ error: 'Invalid API key' }), {
-      status: 401,
-      headers: { 'Content-Type': 'application/json' },
-    })
-  }
-
-  return null // Auth passed
-}
-
-/**
- * Route handler type that accepts request and params
- */
 type RouteHandler = (
   req: Request,
   params: Record<string, string>,
 ) => Response | Promise<Response>
 
-/**
- * Simple router that matches routes defined in routes.ts
- */
-function matchRoute(
-  method: string,
-  pathname: string,
-): { handler: RouteHandler; params: Record<string, string> } | null {
-  // First check for exact matches
-  const exactKey = `${method} ${pathname}` as keyof typeof routes
-  if (routes[exactKey]) {
-    return { handler: routes[exactKey] as RouteHandler, params: {} }
+interface CompiledRoute {
+  method: string
+  regex: RegExp
+  paramNames: string[]
+  handler: RouteHandler
+}
+
+interface MatchResult {
+  handler: RouteHandler
+  params: Record<string, string>
+}
+
+const config = loadConfig()
+
+const EXACT_ROUTES = new Map<string, RouteHandler>()
+const PARAMETERIZED_ROUTES: CompiledRoute[] = []
+
+function escapeRegexSegment(segment: string): string {
+  return segment.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+function compilePath(path: string): { regex: RegExp; paramNames: string[] } {
+  const paramNames: string[] = []
+  const pattern = path
+    .split('/')
+    .map((segment) => {
+      if (segment.startsWith(':')) {
+        const name = segment.slice(1)
+        if (!name) {
+          throw new Error(`Invalid route parameter in path: "${path}"`)
+        }
+        paramNames.push(name)
+        return '([^/]+)'
+      }
+
+      return escapeRegexSegment(segment)
+    })
+    .join('/')
+
+  return { regex: new RegExp(`^${pattern}$`), paramNames }
+}
+
+for (const [key, handler] of Object.entries(routes)) {
+  const [method, path] = key.split(' ')
+  if (!method || !path) {
+    throw new Error(`Invalid route definition "${key}"`)
   }
 
-  // Check for parameterized routes
-  for (const [key, handler] of Object.entries(routes)) {
-    const [routeMethod, routePath] = key.split(' ')
-    if (routeMethod !== method) continue
+  const routeHandler = handler as RouteHandler
+  if (!path.includes(':')) {
+    EXACT_ROUTES.set(`${method} ${path}`, routeHandler)
+    continue
+  }
 
-    // Convert route pattern to regex
-    const paramNames: string[] = []
-    const pattern = routePath?.replace(/:(\w+)/g, (_, name: string) => {
-      paramNames.push(name)
-      return '([^/]+)'
-    })
+  const { regex, paramNames } = compilePath(path)
+  PARAMETERIZED_ROUTES.push({
+    method,
+    regex,
+    paramNames,
+    handler: routeHandler,
+  })
+}
 
-    const regex = new RegExp(`^${pattern}$`)
-    const match = pathname.match(regex)
+function json(data: Record<string, unknown>, status = 200): Response {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'Content-Type': 'application/json' },
+  })
+}
 
-    if (match) {
-      const params: Record<string, string> = {}
-      paramNames.forEach((name, i) => {
-        const value = match[i + 1]
-        if (value) {
-          params[name] = value
-        }
-      })
-      return { handler: handler as RouteHandler, params }
-    }
+function validateAdminApiKey(req: Request): Response | null {
+  const token = extractAuthToken(req)
+  if (!token) {
+    return json({ error: 'Missing API key in Authorization header' }, 401)
+  }
+
+  if (!secureCompare(token, config.adminApiKey)) {
+    return json({ error: 'Invalid API key' }, 401)
   }
 
   return null
 }
 
-const server = Bun.serve({
-  port: PORT,
+function matchRoute(method: string, pathname: string): MatchResult | null {
+  const exact = EXACT_ROUTES.get(`${method} ${pathname}`)
+  if (exact) {
+    return { handler: exact, params: {} }
+  }
 
+  for (const route of PARAMETERIZED_ROUTES) {
+    if (route.method !== method) continue
+
+    const match = pathname.match(route.regex)
+    if (!match) continue
+
+    const params: Record<string, string> = {}
+    route.paramNames.forEach((name, index) => {
+      const value = match[index + 1]
+      if (!value) return
+
+      try {
+        params[name] = decodeURIComponent(value)
+      } catch {
+        params[name] = value
+      }
+    })
+
+    return { handler: route.handler, params }
+  }
+
+  return null
+}
+
+function getCorsOrigin(req: Request): string | null {
+  const requestOrigin = req.headers.get('Origin')
+  if (config.corsOrigins === '*') {
+    return '*'
+  }
+
+  if (!requestOrigin) {
+    return null
+  }
+
+  return config.corsOrigins.includes(requestOrigin) ? requestOrigin : null
+}
+
+function withResponseHeaders(
+  response: Response,
+  req: Request,
+  requestId: string,
+): Response {
+  const headers = new Headers(response.headers)
+  const corsOrigin = getCorsOrigin(req)
+  if (corsOrigin) {
+    headers.set('Access-Control-Allow-Origin', corsOrigin)
+    headers.set('Vary', 'Origin')
+  }
+  headers.set(
+    'Access-Control-Allow-Methods',
+    'GET, POST, PUT, PATCH, DELETE, OPTIONS',
+  )
+  headers.set('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+  headers.set('X-Content-Type-Options', 'nosniff')
+  headers.set('X-Frame-Options', 'DENY')
+  headers.set('Referrer-Policy', 'no-referrer')
+  headers.set('X-Request-Id', requestId)
+
+  return new Response(response.body, {
+    status: response.status,
+    headers,
+  })
+}
+
+function logRequest(
+  requestId: string,
+  method: string,
+  path: string,
+  status: number,
+  startTime: number,
+): void {
+  const durationMs = (performance.now() - startTime).toFixed(1)
+  console.info(`[${requestId}] ${method} ${path} ${status} ${durationMs}ms`)
+}
+
+const server = Bun.serve({
+  port: config.port,
   async fetch(req) {
+    const requestId = crypto.randomUUID()
+    const startTime = performance.now()
     const url = new URL(req.url)
     const method = req.method
     const pathname = url.pathname
 
-    // CORS headers for all responses
-    const corsHeaders = {
-      'Access-Control-Allow-Origin': '*',
-      'Access-Control-Allow-Methods': 'GET, POST, PUT, PATCH, DELETE, OPTIONS',
-      'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-    }
-
-    // Handle preflight requests
     if (method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: corsHeaders })
+      const response = withResponseHeaders(
+        new Response(null, { status: 204 }),
+        req,
+        requestId,
+      )
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
     }
 
-    // Skip API key validation for health check endpoint
     const isHealthCheck = method === 'GET' && pathname === '/health'
-
-    // Validate API key for all routes except health check
     if (!isHealthCheck) {
-      const authError = validateApiKey(req)
+      const authError = validateAdminApiKey(req)
       if (authError) {
-        // Add CORS headers to error response
-        const errorHeaders = new Headers(authError.headers)
-        for (const [key, value] of Object.entries(corsHeaders)) {
-          errorHeaders.set(key, value)
-        }
-        return new Response(authError.body, {
-          status: authError.status,
-          headers: errorHeaders,
-        })
+        const response = withResponseHeaders(authError, req, requestId)
+        logRequest(requestId, method, pathname, response.status, startTime)
+        return response
       }
     }
 
-    // Find matching route
     const match = matchRoute(method, pathname)
-
     if (!match) {
-      return new Response(JSON.stringify({ error: 'Not found' }), {
-        status: 404,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      })
+      const response = withResponseHeaders(
+        json({ error: 'Not found' }, 404),
+        req,
+        requestId,
+      )
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
     }
 
     try {
-      const response = await match.handler(req, match.params)
-
-      // Add CORS headers to response
-      const newHeaders = new Headers(response.headers)
-      for (const [key, value] of Object.entries(corsHeaders)) {
-        newHeaders.set(key, value)
-      }
-
-      return new Response(response.body, {
-        status: response.status,
-        headers: newHeaders,
-      })
+      const routeResponse = await match.handler(req, match.params)
+      const response = withResponseHeaders(routeResponse, req, requestId)
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
     } catch (err) {
-      console.error('Request error:', err)
-      return new Response(JSON.stringify({ error: 'Internal server error' }), {
-        status: 500,
-        headers: { 'Content-Type': 'application/json', ...corsHeaders },
-      })
+      console.error(`[${requestId}] Request error`, err)
+      const response = withResponseHeaders(
+        json({ error: 'Internal server error' }, 500),
+        req,
+        requestId,
+      )
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
     }
   },
 })
 
 console.clear()
-console.log(`Rapids API Key Service :${server.port}`)
+console.log(`Rapids API Key Service listening on :${server.port}`)
 
-// if (process.env.NODE_ENV === 'development') {
-//   console.log(`
-// Rapids API Key Service running at http://localhost:${server.port}
+let shuttingDown = false
 
-// Available endpoints:
-//   GET  /health              - Health check
-//   POST /v1/keys             - Create a new API key
-//   POST /v1/keys/validate    - Validate an API key
-//   GET  /v1/keys             - List all API keys
-//   GET  /v1/keys/stats       - Get API key statistics
-//   GET  /v1/keys/:id         - Get API key by ID
-//   PATCH /v1/keys/:id        - Update API key
-//   POST /v1/keys/:id/revoke  - Revoke an API key
-//   DELETE /v1/keys/:id       - Delete an API key
-//   GET  /v1/protected        - Protected endpoint (requires API key)
-//   POST /v1/apps             - Create app
-//   GET  /v1/apps             - List all apps
-//   GET  /v1/apps/:app_id     - Get app by app_id
-//   PATCH /v1/apps/:app_id    - Update app
-//   DELETE /v1/apps/:app_id   - Delete app
-//   POST /v1/shared-secret    - Create shared secret (private_key, public_key)
-//   GET  /v1/shared-secret/:private_key  - Get by private_key
-//   DELETE /v1/shared-secret/:private_key - Delete by private_key
-//   POST /v1/rues             - Create rues (app_id, public_key)
-//   POST /v1/rues/:rue_id     - Get rue by rue_id
-//   PATCH /v1/rues/:rue_id    - Update rue
-//   DELETE /v1/rues/:rue_id   - Delete rue
-// `)
-// }
+function shutdown(signal: string): void {
+  if (shuttingDown) return
+  shuttingDown = true
 
-// Graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\nShutting down...')
+  console.log(`\nReceived ${signal}. Shutting down...`)
+  server.stop(true)
   closeDatabase()
   process.exit(0)
+}
+
+process.on('SIGINT', () => shutdown('SIGINT'))
+process.on('SIGTERM', () => shutdown('SIGTERM'))
+process.on('unhandledRejection', (err) => {
+  console.error('Unhandled promise rejection:', err)
+  shutdown('unhandledRejection')
 })
-
-process.on('SIGTERM', () => {
-  console.log('\nShutting down...')
-  closeDatabase()
-  process.exit(0)
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err)
+  shutdown('uncaughtException')
 })

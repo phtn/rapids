@@ -10,27 +10,12 @@ export interface SharedSecret {
 }
 
 /**
- * Initialize the shared_secrets table
- */
-function ensureTable(): void {
-  const db = getDatabase()
-  db.run(`
-    CREATE TABLE IF NOT EXISTS shared_secrets (
-      private_key TEXT PRIMARY KEY,
-      public_key TEXT NOT NULL,
-      created_at INTEGER NOT NULL
-    )
-  `)
-}
-
-/**
  * Create a new shared secret entry
  */
 export function createSharedSecret(
   privateKey: string,
   publicKey: string,
 ): SharedSecret {
-  ensureTable()
   const db = getDatabase()
   const now = Date.now()
 
@@ -53,7 +38,6 @@ export function createSharedSecret(
  * Get shared secret by private_key
  */
 export function getSharedSecret(privateKey: string): SharedSecret | null {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare<
@@ -75,7 +59,6 @@ export function getSharedSecret(privateKey: string): SharedSecret | null {
  * Delete shared secret by private_key
  */
 export function deleteSharedSecret(privateKey: string): boolean {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare('DELETE FROM shared_secrets WHERE private_key = ?')
@@ -88,7 +71,6 @@ export function deleteSharedSecret(privateKey: string): boolean {
  * List all shared secrets
  */
 export function listSharedSecrets(): SharedSecret[] {
-  ensureTable()
   const db = getDatabase()
 
   const stmt = db.prepare<

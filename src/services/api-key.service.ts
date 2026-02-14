@@ -9,6 +9,13 @@ import type {
   ApiKeyValidationResult,
 } from '../types/index.ts'
 
+export class ApiKeyConfigValidationError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'ApiKeyConfigValidationError'
+  }
+}
+
 /**
  * Character sets for key generation
  */
@@ -20,6 +27,9 @@ const CHARSETS: Record<ApiKeyCharset, string> = {
   hex: '0123456789abcdef',
   base64url: 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_',
 }
+
+const MIN_KEY_LENGTH = 8
+const MAX_KEY_LENGTH = 512
 
 /**
  * Default configuration for API key generation
@@ -35,6 +45,90 @@ const DEFAULT_CONFIG: Required<Omit<ApiKeyConfig, 'name'>> & {
   scopes: [],
   name: null,
   rateLimit: null,
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeConfig(
+  config: ApiKeyConfig,
+): Required<Omit<ApiKeyConfig, 'name'>> & { name: string | null } {
+  const merged = { ...DEFAULT_CONFIG, ...config }
+
+  if (!Number.isInteger(merged.length)) {
+    throw new ApiKeyConfigValidationError('"length" must be an integer')
+  }
+  if (merged.length < MIN_KEY_LENGTH || merged.length > MAX_KEY_LENGTH) {
+    throw new ApiKeyConfigValidationError(
+      `"length" must be between ${MIN_KEY_LENGTH} and ${MAX_KEY_LENGTH}`,
+    )
+  }
+  if (!merged.prefix.trim()) {
+    throw new ApiKeyConfigValidationError('"prefix" must not be empty')
+  }
+  if (!CHARSETS[merged.charset]) {
+    throw new ApiKeyConfigValidationError('Invalid "charset" value')
+  }
+  if (merged.expiresIn !== null && !Number.isInteger(merged.expiresIn)) {
+    throw new ApiKeyConfigValidationError(
+      '"expiresIn" must be an integer (seconds) or null',
+    )
+  }
+  if (!isRecord(merged.metadata)) {
+    throw new ApiKeyConfigValidationError('"metadata" must be a JSON object')
+  }
+  if (
+    !Array.isArray(merged.scopes) ||
+    merged.scopes.some((scope) => typeof scope !== 'string')
+  ) {
+    throw new ApiKeyConfigValidationError(
+      '"scopes" must be an array of strings',
+    )
+  }
+  if (
+    merged.rateLimit !== null &&
+    (!Number.isInteger(merged.rateLimit) || merged.rateLimit <= 0)
+  ) {
+    throw new ApiKeyConfigValidationError(
+      '"rateLimit" must be a positive integer or null',
+    )
+  }
+  if (merged.name !== null && typeof merged.name !== 'string') {
+    throw new ApiKeyConfigValidationError('"name" must be a string')
+  }
+
+  const normalizedName = merged.name?.trim() || null
+  const normalizedScopes = Array.from(
+    new Set(merged.scopes.map((scope) => scope.trim()).filter(Boolean)),
+  )
+
+  return {
+    ...merged,
+    prefix: merged.prefix.trim(),
+    name: normalizedName,
+    scopes: normalizedScopes,
+  }
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return isRecord(parsed) ? parsed : {}
+  } catch {
+    return {}
+  }
+}
+
+function parseStringArray(value: string): string[] {
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return Array.isArray(parsed)
+      ? parsed.filter((item) => typeof item === 'string')
+      : []
+  } catch {
+    return []
+  }
 }
 
 /**
@@ -86,8 +180,8 @@ function rowToApiKey(row: ApiKeyRow): ApiKey {
     expiresAt: row.expires_at ? new Date(row.expires_at) : null,
     lastUsedAt: row.last_used_at ? new Date(row.last_used_at) : null,
     isActive: row.is_active === 1,
-    metadata: JSON.parse(row.metadata) as Record<string, unknown>,
-    scopes: JSON.parse(row.scopes) as string[],
+    metadata: parseJsonObject(row.metadata),
+    scopes: parseStringArray(row.scopes),
     rateLimit: row.rate_limit,
   }
 }
@@ -102,7 +196,7 @@ export const ApiKeyService = {
   async create(config: ApiKeyConfig = {}): Promise<ApiKeyCreateResult> {
     const db = getDatabase()
 
-    const mergedConfig = { ...DEFAULT_CONFIG, ...config }
+    const mergedConfig = normalizeConfig(config)
     const charset = CHARSETS[mergedConfig.charset]
 
     // Generate the raw key
@@ -294,13 +388,13 @@ export const ApiKeyService = {
    */
   list(options: ApiKeyListOptions = {}): ApiKey[] {
     const db = getDatabase()
-    const {
-      isActive,
-      prefix,
-      includeExpired = false,
-      offset = 0,
-      limit = 50,
-    } = options
+    const { isActive, prefix, includeExpired = false } = options
+    const offset =
+      options.offset !== undefined && options.offset > 0 ? options.offset : 0
+    const limit =
+      options.limit !== undefined
+        ? Math.min(Math.max(options.limit, 1), 100)
+        : 50
 
     const conditions: string[] = []
     const params: (string | number)[] = []

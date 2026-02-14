@@ -1,6 +1,9 @@
 import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
 import { closeDatabase, getDatabase } from '../db/index.ts'
-import { ApiKeyService } from './api-key.service.ts'
+import {
+  ApiKeyConfigValidationError,
+  ApiKeyService,
+} from './api-key.service.ts'
 
 // Use in-memory database for tests
 process.env.DB_PATH = ':memory:'
@@ -83,25 +86,37 @@ describe('ApiKeyService', () => {
 
     test('uses different charsets', async () => {
       const hexResult = await ApiKeyService.create({
-        prefix: '',
+        prefix: 'h_',
         length: 32,
         charset: 'hex',
       })
-      expect(hexResult.key).toMatch(/^[0-9a-f]+$/)
+      expect(hexResult.key.slice(2)).toMatch(/^[0-9a-f]+$/)
 
       const upperResult = await ApiKeyService.create({
-        prefix: '',
+        prefix: 'u_',
         length: 32,
         charset: 'alphanumeric_upper',
       })
-      expect(upperResult.key).toMatch(/^[A-Z0-9]+$/)
+      expect(upperResult.key.slice(2)).toMatch(/^[A-Z0-9]+$/)
 
       const lowerResult = await ApiKeyService.create({
-        prefix: '',
+        prefix: 'l_',
         length: 32,
         charset: 'alphanumeric_lower',
       })
-      expect(lowerResult.key).toMatch(/^[a-z0-9]+$/)
+      expect(lowerResult.key.slice(2)).toMatch(/^[a-z0-9]+$/)
+    })
+
+    test('rejects invalid config', async () => {
+      await expect(ApiKeyService.create({ prefix: '' })).rejects.toBeInstanceOf(
+        ApiKeyConfigValidationError,
+      )
+      await expect(ApiKeyService.create({ length: 1 })).rejects.toBeInstanceOf(
+        ApiKeyConfigValidationError,
+      )
+      await expect(
+        ApiKeyService.create({ rateLimit: 0 }),
+      ).rejects.toBeInstanceOf(ApiKeyConfigValidationError)
     })
   })
 
