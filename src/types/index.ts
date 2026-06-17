@@ -18,6 +18,10 @@ export interface ApiKeyConfig {
   name?: string
   /** Rate limit per minute (null = unlimited) */
   rateLimit?: number | null
+  /** Owning tenant for the key */
+  tenantId?: string
+  /** Owning project for the key */
+  projectId?: string
 }
 
 /**
@@ -37,6 +41,10 @@ export interface ApiKey {
   id: string
   /** The hashed version of the key (never store raw) */
   keyHash: string
+  /** Owning tenant */
+  tenantId: string
+  /** Owning project */
+  projectId: string
   /** The key prefix for identification */
   prefix: string
   /** Last 4 characters for display */
@@ -101,6 +109,8 @@ export interface ApiKeyListOptions {
 export interface ApiKeyRow {
   id: string
   key_hash: string
+  tenant_id: string
+  project_id: string
   prefix: string
   suffix: string
   name: string | null
@@ -111,4 +121,53 @@ export interface ApiKeyRow {
   metadata: string
   scopes: string
   rate_limit: number | null
+}
+
+/**
+ * Tenant record.
+ */
+export interface Tenant {
+  tenant_id: string
+  name: string
+  created_at: string
+}
+
+/**
+ * Project record.
+ */
+export interface Project {
+  project_id: string
+  tenant_id: string
+  name: string
+  created_at: string
+}
+
+/**
+ * Audit event record.
+ */
+export interface AuditEvent {
+  id: string
+  request_id: string
+  occurred_at: string
+  actor_type: 'admin' | 'api_key'
+  actor_id: string
+  tenant_id: string
+  project_id: string
+  method: string
+  path: string
+  status: number
+  auth_result: string
+}
+
+/**
+ * Resolved request context.
+ */
+export interface RequestContext {
+  actorType: 'admin' | 'api_key'
+  actorId: string
+  tenantId: string
+  projectId: string
+  scopes: string[]
+  keyId?: string
+  keyName?: string | null
 }

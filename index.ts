@@ -1,11 +1,29 @@
-import { loadConfig } from './src/config/env.ts'
-import { closeDatabase } from './src/db/index.ts'
+import { Cause, Effect, Option } from 'effect'
+import {
+  type ConfigError,
+  configErrorMessage,
+  loadConfig,
+} from './src/config/env.ts'
+import {
+  type DbError,
+  closeDatabase,
+  dbErrorMessage,
+  openDatabase,
+  setDatabase,
+} from './src/db/index.ts'
 import { extractAuthToken, secureCompare } from './src/server/auth.ts'
+import {
+  type ResolvedRequestContext,
+  createAdminContext,
+  resolveRequestContext,
+} from './src/server/request-context.ts'
 import { routes } from './src/server/routes.ts'
+import { AuditService } from './src/services/audit.service.ts'
 
 type RouteHandler = (
   req: Request,
   params: Record<string, string>,
+  context?: ResolvedRequestContext,
 ) => Response | Promise<Response>
 
 interface CompiledRoute {
@@ -20,7 +38,27 @@ interface MatchResult {
   params: Record<string, string>
 }
 
-const config = loadConfig()
+const configExit = Effect.runSyncExit(loadConfig())
+if (configExit._tag === 'Failure') {
+  const message = Option.match(Cause.failureOption(configExit.cause), {
+    onNone: () => 'Configuration failed.',
+    onSome: (err: ConfigError) => configErrorMessage(err),
+  })
+  console.error('Configuration error:', message)
+  process.exit(1)
+}
+const config = configExit.value
+
+const dbExit = Effect.runSyncExit(openDatabase(config.dbPath))
+if (dbExit._tag === 'Failure') {
+  const message = Option.match(Cause.failureOption(dbExit.cause), {
+    onNone: () => 'Database failed to open.',
+    onSome: (err: DbError) => dbErrorMessage(err),
+  })
+  console.error('Database error:', message)
+  process.exit(1)
+}
+setDatabase(dbExit.value)
 
 const EXACT_ROUTES = new Map<string, RouteHandler>()
 const PARAMETERIZED_ROUTES: CompiledRoute[] = []
@@ -78,6 +116,18 @@ function json(data: Record<string, unknown>, status = 200): Response {
   })
 }
 
+function healthResponse(): Response {
+  return json({ status: 'ok', timestamp: new Date().toISOString() })
+}
+
+function readinessResponse(): Response {
+  if (shuttingDown) {
+    return json({ status: 'draining' }, 503)
+  }
+
+  return json({ status: 'ready' })
+}
+
 function validateAdminApiKey(req: Request): Response | null {
   const token = extractAuthToken(req)
   if (!token) {
@@ -90,6 +140,8 @@ function validateAdminApiKey(req: Request): Response | null {
 
   return null
 }
+
+const PUBLIC_CONTEXT_ROUTES = new Set(['GET /v1/context', 'GET /v1/protected'])
 
 function matchRoute(method: string, pathname: string): MatchResult | null {
   const exact = EXACT_ROUTES.get(`${method} ${pathname}`)
@@ -173,6 +225,7 @@ function logRequest(
 }
 
 const server = Bun.serve({
+  hostname: config.host,
   port: config.port,
   async fetch(req) {
     const requestId = crypto.randomUUID()
@@ -180,6 +233,9 @@ const server = Bun.serve({
     const url = new URL(req.url)
     const method = req.method
     const pathname = url.pathname
+    const routeKey = `${method} ${pathname}`
+    let requestContext: ResolvedRequestContext | null = null
+    let authResult: 'admin' | 'api_key' | null = null
 
     if (method === 'OPTIONS') {
       const response = withResponseHeaders(
@@ -192,13 +248,42 @@ const server = Bun.serve({
     }
 
     const isHealthCheck = method === 'GET' && pathname === '/health'
-    if (!isHealthCheck) {
+    if (isHealthCheck) {
+      const response = withResponseHeaders(healthResponse(), req, requestId)
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
+    }
+
+    const isReadinessCheck = method === 'GET' && pathname === '/ready'
+    if (isReadinessCheck) {
+      const response = withResponseHeaders(readinessResponse(), req, requestId)
+      logRequest(requestId, method, pathname, response.status, startTime)
+      return response
+    }
+
+    if (PUBLIC_CONTEXT_ROUTES.has(routeKey)) {
+      const resolved = await resolveRequestContext(req, config.adminApiKey, {
+        updateLastUsed: pathname === '/v1/protected',
+      })
+
+      if (resolved instanceof Response) {
+        const response = withResponseHeaders(resolved, req, requestId)
+        logRequest(requestId, method, pathname, response.status, startTime)
+        return response
+      }
+
+      requestContext = resolved
+      authResult = resolved.authResult
+    } else if (!isHealthCheck) {
       const authError = validateAdminApiKey(req)
       if (authError) {
         const response = withResponseHeaders(authError, req, requestId)
         logRequest(requestId, method, pathname, response.status, startTime)
         return response
       }
+
+      requestContext = createAdminContext()
+      authResult = 'admin'
     }
 
     const match = matchRoute(method, pathname)
@@ -208,13 +293,51 @@ const server = Bun.serve({
         req,
         requestId,
       )
+      if (requestContext && authResult) {
+        try {
+          AuditService.record({
+            requestId,
+            actorType: requestContext.context.actorType,
+            actorId: requestContext.context.actorId,
+            tenantId: requestContext.context.tenantId,
+            projectId: requestContext.context.projectId,
+            method,
+            path: pathname,
+            status: response.status,
+            authResult,
+          })
+        } catch (err) {
+          console.warn(`[${requestId}] Audit logging failed`, err)
+        }
+      }
       logRequest(requestId, method, pathname, response.status, startTime)
       return response
     }
 
     try {
-      const routeResponse = await match.handler(req, match.params)
+      const routeResponse = await match.handler(
+        req,
+        match.params,
+        requestContext ?? undefined,
+      )
       const response = withResponseHeaders(routeResponse, req, requestId)
+      if (requestContext && authResult) {
+        try {
+          AuditService.record({
+            requestId,
+            actorType: requestContext.context.actorType,
+            actorId: requestContext.context.actorId,
+            tenantId: requestContext.context.tenantId,
+            projectId: requestContext.context.projectId,
+            method,
+            path: pathname,
+            status: response.status,
+            authResult,
+          })
+        } catch (err) {
+          console.warn(`[${requestId}] Audit logging failed`, err)
+        }
+      }
       logRequest(requestId, method, pathname, response.status, startTime)
       return response
     } catch (err) {
@@ -230,28 +353,29 @@ const server = Bun.serve({
   },
 })
 
-console.clear()
-console.log(`Rapids API Key Service listening on :${server.port}`)
-
 let shuttingDown = false
 
-function shutdown(signal: string): void {
+console.log(
+  `Rapids API Key Service listening on ${config.host}:${server.port} (db: ${config.dbPath})`,
+)
+
+function shutdown(signal: string, exitCode = 0): void {
   if (shuttingDown) return
   shuttingDown = true
 
   console.log(`\nReceived ${signal}. Shutting down...`)
   server.stop(true)
   closeDatabase()
-  process.exit(0)
+  process.exit(exitCode)
 }
 
 process.on('SIGINT', () => shutdown('SIGINT'))
 process.on('SIGTERM', () => shutdown('SIGTERM'))
 process.on('unhandledRejection', (err) => {
   console.error('Unhandled promise rejection:', err)
-  shutdown('unhandledRejection')
+  shutdown('unhandledRejection', 1)
 })
 process.on('uncaughtException', (err) => {
   console.error('Uncaught exception:', err)
-  shutdown('uncaughtException')
+  shutdown('uncaughtException', 1)
 })

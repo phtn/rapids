@@ -1,19 +1,37 @@
-import { afterAll, beforeEach, describe, expect, test } from 'bun:test'
-import { closeDatabase, getDatabase } from '../db/index.ts'
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  test,
+} from 'bun:test'
+import { Effect } from 'effect'
+import {
+  closeDatabase,
+  getDatabase,
+  openDatabase,
+  setDatabase,
+} from '../db/index.ts'
 import {
   ApiKeyConfigValidationError,
   ApiKeyService,
 } from './api-key.service.ts'
 
-// Use in-memory database for tests
 process.env.DB_PATH = ':memory:'
 
 describe('ApiKeyService', () => {
+  beforeAll(() => {
+    const db = Effect.runSync(openDatabase())
+    setDatabase(db)
+  })
+
   beforeEach(() => {
     // Clear all data between tests
     const db = getDatabase()
     db.run('DELETE FROM rate_limit_records')
     db.run('DELETE FROM api_keys')
+    db.run('DELETE FROM audit_events')
   })
 
   afterAll(() => {
@@ -27,6 +45,8 @@ describe('ApiKeyService', () => {
       expect(result.key).toStartWith('rapids_')
       expect(result.key.length).toBe(39) // 7 prefix ("rapids_") + 32 random
       expect(result.record.id).toBeDefined()
+      expect(result.record.tenantId).toBe('default_tenant')
+      expect(result.record.projectId).toBe('default_project')
       expect(result.record.prefix).toBe('rapids_')
       expect(result.record.isActive).toBe(true)
       expect(result.record.expiresAt).toBeNull()
@@ -70,6 +90,81 @@ describe('ApiKeyService', () => {
         tier: 'premium',
       })
       expect(result.record.scopes).toEqual(['read', 'write'])
+    })
+
+    test('applies the full custom config to the stored record', async () => {
+      const result = await ApiKeyService.create({
+        prefix: 'sk_live_',
+        length: 24,
+        charset: 'hex',
+        expiresIn: 3600,
+        metadata: { tenantId: 'tenant_123', tier: 'enterprise' },
+        scopes: [' read ', 'write', 'read', ''],
+        name: '  Production Key  ',
+        rateLimit: 250,
+      })
+
+      expect(result.key).toStartWith('sk_live_')
+      expect(result.key.length).toBe(32)
+      expect(result.key.slice('sk_live_'.length)).toMatch(/^[0-9a-f]+$/)
+      expect(result.record.prefix).toBe('sk_live_')
+      expect(result.record.name).toBe('Production Key')
+      expect(result.record.metadata).toEqual({
+        tenantId: 'tenant_123',
+        tier: 'enterprise',
+      })
+      expect(result.record.scopes).toEqual(['read', 'write'])
+      expect(result.record.rateLimit).toBe(250)
+      expect(result.record.expiresAt).not.toBeNull()
+
+      const stored = ApiKeyService.getById(result.record.id)
+      expect(stored?.prefix).toBe('sk_live_')
+      expect(stored?.name).toBe('Production Key')
+      expect(stored?.metadata).toEqual({
+        tenantId: 'tenant_123',
+        tier: 'enterprise',
+      })
+      expect(stored?.scopes).toEqual(['read', 'write'])
+      expect(stored?.rateLimit).toBe(250)
+    })
+
+    test('supports custom tenant and project ownership', async () => {
+      const db = getDatabase()
+      db.run(
+        'INSERT OR IGNORE INTO tenants (tenant_id, name, created_at) VALUES (?, ?, ?)',
+        ['tenant_acme', 'Acme', Date.now()],
+      )
+      db.run(
+        'INSERT OR IGNORE INTO projects (project_id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)',
+        ['project_acme', 'tenant_acme', 'Acme Billing', Date.now()],
+      )
+
+      const result = await ApiKeyService.create({
+        tenantId: 'tenant_acme',
+        projectId: 'project_acme',
+        prefix: 'acme_',
+      })
+
+      expect(result.record.tenantId).toBe('tenant_acme')
+      expect(result.record.projectId).toBe('project_acme')
+
+      const stored = ApiKeyService.getById(result.record.id)
+      expect(stored?.tenantId).toBe('tenant_acme')
+      expect(stored?.projectId).toBe('project_acme')
+    })
+
+    test('preserves an explicit expiresIn of 0', async () => {
+      const beforeCreate = Date.now()
+      const result = await ApiKeyService.create({ expiresIn: 0 })
+      const afterCreate = Date.now()
+
+      expect(result.record.expiresAt).not.toBeNull()
+      expect(result.record.expiresAt!.getTime()).toBeGreaterThanOrEqual(
+        beforeCreate,
+      )
+      expect(result.record.expiresAt!.getTime()).toBeLessThanOrEqual(
+        afterCreate,
+      )
     })
 
     test('creates an API key with custom name', async () => {
@@ -116,6 +211,12 @@ describe('ApiKeyService', () => {
       )
       await expect(
         ApiKeyService.create({ rateLimit: 0 }),
+      ).rejects.toBeInstanceOf(ApiKeyConfigValidationError)
+      await expect(
+        ApiKeyService.create({
+          tenantId: 'tenant_missing',
+          projectId: 'project_missing',
+        }),
       ).rejects.toBeInstanceOf(ApiKeyConfigValidationError)
     })
   })
@@ -283,7 +384,13 @@ describe('ApiKeyService', () => {
     test('updates scopes', async () => {
       const { record } = await ApiKeyService.create({ scopes: ['read'] })
 
-      ApiKeyService.updateScopes(record.id, ['read', 'write', 'delete'])
+      ApiKeyService.updateScopes(record.id, [
+        'read',
+        ' write ',
+        'delete',
+        'read',
+        '',
+      ])
 
       const updated = ApiKeyService.getById(record.id)
       expect(updated?.scopes).toEqual(['read', 'write', 'delete'])
@@ -294,7 +401,7 @@ describe('ApiKeyService', () => {
     test('renames an API key', async () => {
       const { record } = await ApiKeyService.create({ name: 'Old Name' })
 
-      ApiKeyService.rename(record.id, 'New Name')
+      ApiKeyService.rename(record.id, '  New Name  ')
 
       const updated = ApiKeyService.getById(record.id)
       expect(updated?.name).toBe('New Name')

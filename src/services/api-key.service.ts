@@ -1,3 +1,4 @@
+import { DEFAULT_PROJECT_ID, DEFAULT_TENANT_ID } from '../constants/platform.ts'
 import { getDatabase } from '../db/index.ts'
 import type {
   ApiKey,
@@ -45,10 +46,22 @@ const DEFAULT_CONFIG: Required<Omit<ApiKeyConfig, 'name'>> & {
   scopes: [],
   name: null,
   rateLimit: null,
+  tenantId: DEFAULT_TENANT_ID,
+  projectId: DEFAULT_PROJECT_ID,
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function normalizeScopes(scopes: string[]): string[] {
+  return Array.from(
+    new Set(scopes.map((scope) => scope.trim()).filter(Boolean)),
+  )
+}
+
+function normalizeName(name: string | null): string | null {
+  return name?.trim() || null
 }
 
 function normalizeConfig(
@@ -94,21 +107,46 @@ function normalizeConfig(
       '"rateLimit" must be a positive integer or null',
     )
   }
+  if (merged.tenantId !== null && typeof merged.tenantId !== 'string') {
+    throw new ApiKeyConfigValidationError('"tenantId" must be a string')
+  }
+  if (merged.projectId !== null && typeof merged.projectId !== 'string') {
+    throw new ApiKeyConfigValidationError('"projectId" must be a string')
+  }
   if (merged.name !== null && typeof merged.name !== 'string') {
     throw new ApiKeyConfigValidationError('"name" must be a string')
   }
 
-  const normalizedName = merged.name?.trim() || null
-  const normalizedScopes = Array.from(
-    new Set(merged.scopes.map((scope) => scope.trim()).filter(Boolean)),
-  )
-
   return {
     ...merged,
     prefix: merged.prefix.trim(),
-    name: normalizedName,
-    scopes: normalizedScopes,
+    name: normalizeName(merged.name),
+    tenantId:
+      typeof merged.tenantId === 'string' && merged.tenantId.trim()
+        ? merged.tenantId.trim()
+        : DEFAULT_TENANT_ID,
+    projectId:
+      typeof merged.projectId === 'string' && merged.projectId.trim()
+        ? merged.projectId.trim()
+        : DEFAULT_PROJECT_ID,
+    metadata: { ...merged.metadata },
+    scopes: normalizeScopes(merged.scopes),
   }
+}
+
+function recordExists(
+  table: 'tenants' | 'projects',
+  column: string,
+  id: string,
+): boolean {
+  const db = getDatabase()
+  const row = db
+    .prepare<{ count: number }, [string]>(
+      `SELECT COUNT(*) as count FROM ${table} WHERE ${column} = ?`,
+    )
+    .get(id)
+
+  return (row?.count ?? 0) > 0
 }
 
 function parseJsonObject(value: string): Record<string, unknown> {
@@ -173,6 +211,8 @@ function rowToApiKey(row: ApiKeyRow): ApiKey {
   return {
     id: row.id,
     keyHash: row.key_hash,
+    tenantId: row.tenant_id,
+    projectId: row.project_id,
     prefix: row.prefix,
     suffix: row.suffix,
     name: row.name,
@@ -199,6 +239,13 @@ export const ApiKeyService = {
     const mergedConfig = normalizeConfig(config)
     const charset = CHARSETS[mergedConfig.charset]
 
+    if (!recordExists('tenants', 'tenant_id', mergedConfig.tenantId)) {
+      throw new ApiKeyConfigValidationError('Unknown "tenantId"')
+    }
+    if (!recordExists('projects', 'project_id', mergedConfig.projectId)) {
+      throw new ApiKeyConfigValidationError('Unknown "projectId"')
+    }
+
     // Generate the raw key
     const randomPart = generateRandomString(mergedConfig.length, charset)
     const rawKey = `${mergedConfig.prefix}${randomPart}`
@@ -208,9 +255,10 @@ export const ApiKeyService = {
 
     // Calculate expiration
     const now = Date.now()
-    const expiresAt = mergedConfig.expiresIn
-      ? now + mergedConfig.expiresIn * 1000
-      : null
+    const expiresAt =
+      mergedConfig.expiresIn === null
+        ? null
+        : now + mergedConfig.expiresIn * 1000
 
     // Create the record
     const id = generateId()
@@ -218,14 +266,16 @@ export const ApiKeyService = {
 
     const stmt = db.prepare(`
       INSERT INTO api_keys (
-        id, key_hash, prefix, suffix, name, created_at, expires_at,
+        id, key_hash, tenant_id, project_id, prefix, suffix, name, created_at, expires_at,
         is_active, metadata, scopes, rate_limit
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
     `)
 
     stmt.run(
       id,
       keyHash,
+      mergedConfig.tenantId,
+      mergedConfig.projectId,
       mergedConfig.prefix,
       suffix,
       mergedConfig.name,
@@ -239,6 +289,8 @@ export const ApiKeyService = {
     const record: ApiKey = {
       id,
       keyHash,
+      tenantId: mergedConfig.tenantId,
+      projectId: mergedConfig.projectId,
       prefix: mergedConfig.prefix,
       suffix,
       name: mergedConfig.name,
@@ -435,9 +487,14 @@ export const ApiKeyService = {
    */
   updateMetadata(keyId: string, metadata: Record<string, unknown>): boolean {
     const db = getDatabase()
+    if (!isRecord(metadata)) {
+      throw new ApiKeyConfigValidationError('"metadata" must be a JSON object')
+    }
+
+    const normalizedMetadata = { ...metadata }
 
     const stmt = db.prepare('UPDATE api_keys SET metadata = ? WHERE id = ?')
-    const result = stmt.run(JSON.stringify(metadata), keyId)
+    const result = stmt.run(JSON.stringify(normalizedMetadata), keyId)
 
     return result.changes > 0
   },
@@ -447,9 +504,19 @@ export const ApiKeyService = {
    */
   updateScopes(keyId: string, scopes: string[]): boolean {
     const db = getDatabase()
+    if (
+      !Array.isArray(scopes) ||
+      scopes.some((scope) => typeof scope !== 'string')
+    ) {
+      throw new ApiKeyConfigValidationError(
+        '"scopes" must be an array of strings',
+      )
+    }
+
+    const normalizedScopes = normalizeScopes(scopes)
 
     const stmt = db.prepare('UPDATE api_keys SET scopes = ? WHERE id = ?')
-    const result = stmt.run(JSON.stringify(scopes), keyId)
+    const result = stmt.run(JSON.stringify(normalizedScopes), keyId)
 
     return result.changes > 0
   },
@@ -459,9 +526,14 @@ export const ApiKeyService = {
    */
   rename(keyId: string, name: string): boolean {
     const db = getDatabase()
+    if (typeof name !== 'string') {
+      throw new ApiKeyConfigValidationError('"name" must be a string')
+    }
+
+    const normalizedName = normalizeName(name)
 
     const stmt = db.prepare('UPDATE api_keys SET name = ? WHERE id = ?')
-    const result = stmt.run(name, keyId)
+    const result = stmt.run(normalizedName, keyId)
 
     return result.changes > 0
   },

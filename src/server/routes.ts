@@ -2,8 +2,12 @@ import {
   ApiKeyConfigValidationError,
   ApiKeyService,
 } from '../services/api-key.service.ts'
+import { AuditService } from '../services/audit.service.ts'
+import { ControlPlaneService } from '../services/control-plane.service.ts'
 import type { ApiKeyConfig, ApiKeyListOptions } from '../types/index.ts'
 import { extractAuthToken } from './auth.ts'
+import type { ResolvedRequestContext } from './request-context.ts'
+import { resolveRequestContext } from './request-context.ts'
 
 /**
  * JSON response helper
@@ -124,6 +128,8 @@ export const routes = {
         {
           key: result.key,
           id: result.record.id,
+          tenantId: result.record.tenantId,
+          projectId: result.record.projectId,
           expiresAt: result.record.expiresAt?.toISOString() ?? null,
         },
         201,
@@ -160,6 +166,8 @@ export const routes = {
             prefix: result.key.prefix,
             suffix: result.key.suffix,
             name: result.key.name,
+            tenantId: result.key.tenantId,
+            projectId: result.key.projectId,
             scopes: result.key.scopes,
             expiresAt: result.key.expiresAt?.toISOString() ?? null,
             isActive: result.key.isActive,
@@ -211,6 +219,8 @@ export const routes = {
         prefix: k.prefix,
         suffix: k.suffix,
         name: k.name,
+        tenantId: k.tenantId,
+        projectId: k.projectId,
         isActive: k.isActive,
         scopes: k.scopes,
         rateLimit: k.rateLimit,
@@ -237,6 +247,8 @@ export const routes = {
       prefix: key.prefix,
       suffix: key.suffix,
       name: key.name,
+      tenantId: key.tenantId,
+      projectId: key.projectId,
       isActive: key.isActive,
       scopes: key.scopes,
       metadata: key.metadata,
@@ -314,6 +326,8 @@ export const routes = {
         ? {
             id: updatedKey.id,
             name: updatedKey.name,
+            tenantId: updatedKey.tenantId,
+            projectId: updatedKey.projectId,
             scopes: updatedKey.scopes,
             metadata: updatedKey.metadata,
           }
@@ -367,6 +381,44 @@ export const routes = {
 
     return json({
       message: 'You have access to this protected resource!',
+      timestamp: new Date().toISOString(),
+    })
+  },
+
+  /**
+   * Resolve the current request context.
+   * Accepts either the admin API key or a project API key.
+   */
+  'GET /v1/context': async (
+    req: Request,
+    _params: Record<string, string>,
+    context?: ResolvedRequestContext,
+  ) => {
+    const resolved =
+      context ??
+      (await resolveRequestContext(req, process.env.API_KEY ?? '', {
+        updateLastUsed: false,
+      }))
+
+    if (resolved instanceof Response) {
+      return resolved
+    }
+
+    const { context: requestContext, authResult } = resolved
+    return json({
+      authResult,
+      actorType: requestContext.actorType,
+      actorId: requestContext.actorId,
+      tenantId: requestContext.tenantId,
+      projectId: requestContext.projectId,
+      scopes: requestContext.scopes,
+      key:
+        requestContext.actorType === 'api_key'
+          ? {
+              id: requestContext.keyId,
+              name: requestContext.keyName,
+            }
+          : null,
       timestamp: new Date().toISOString(),
     })
   },
@@ -524,6 +576,117 @@ export const routes = {
     }
 
     return json({ message: 'Shared secret deleted successfully' })
+  },
+
+  /**
+   * List tenants.
+   */
+  'GET /v1/tenants': () => {
+    const tenants = ControlPlaneService.listTenants()
+    return json({ tenants, count: tenants.length })
+  },
+
+  /**
+   * Create a tenant.
+   */
+  'POST /v1/tenants': async (req: Request) => {
+    const body = await parseBody<{ tenant_id?: string; name?: string }>(req)
+
+    if (!body?.name) {
+      return error('Missing "name" in request body')
+    }
+
+    const tenant = ControlPlaneService.createTenant({
+      tenant_id: body.tenant_id,
+      name: body.name,
+    })
+
+    return json(tenant, 201)
+  },
+
+  /**
+   * Get tenant by tenant_id.
+   */
+  'GET /v1/tenants/:tenant_id': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const tenant = ControlPlaneService.getTenant(params.tenant_id ?? '')
+
+    if (!tenant) {
+      return error('Tenant not found', 404)
+    }
+
+    return json(tenant)
+  },
+
+  /**
+   * List projects.
+   */
+  'GET /v1/projects': (req: Request) => {
+    const url = new URL(req.url)
+    const tenantId = url.searchParams.get('tenant_id') ?? undefined
+    const projects = ControlPlaneService.listProjects({ tenantId })
+    return json({ projects, count: projects.length })
+  },
+
+  /**
+   * Create a project.
+   */
+  'POST /v1/projects': async (req: Request) => {
+    const body = await parseBody<{
+      project_id?: string
+      tenant_id?: string
+      name?: string
+    }>(req)
+
+    if (!body?.tenant_id) {
+      return error('Missing "tenant_id" in request body')
+    }
+    if (!body?.name) {
+      return error('Missing "name" in request body')
+    }
+
+    const project = ControlPlaneService.createProject({
+      project_id: body.project_id,
+      tenant_id: body.tenant_id,
+      name: body.name,
+    })
+
+    if (!project) {
+      return error('Tenant not found', 404)
+    }
+
+    return json(project, 201)
+  },
+
+  /**
+   * Get project by project_id.
+   */
+  'GET /v1/projects/:project_id': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const project = ControlPlaneService.getProject(params.project_id ?? '')
+
+    if (!project) {
+      return error('Project not found', 404)
+    }
+
+    return json(project)
+  },
+
+  /**
+   * List audit events.
+   */
+  'GET /v1/audit-events': (req: Request) => {
+    const url = new URL(req.url)
+    const limit = Number.parseInt(url.searchParams.get('limit') ?? '50', 10)
+    const safeLimit = Number.isFinite(limit)
+      ? Math.min(Math.max(limit, 1), 100)
+      : 50
+    const events = AuditService.list(safeLimit)
+    return json({ events, count: events.length })
   },
 }
 

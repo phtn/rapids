@@ -25,9 +25,13 @@
   },
   "devDependencies": {
     "@biomejs/biome": "^1.9.4",
+    "@effect/language-service": "^0.77.0",
     "@types/bun": "latest"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "dependencies": {
+    "effect": "^3.19.19"
   }
 }
