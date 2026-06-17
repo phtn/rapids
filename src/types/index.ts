@@ -2,7 +2,7 @@
  * Configuration options for generating API keys
  */
 export interface ApiKeyConfig {
-  /** Prefix for the key (e.g., 'sk_', 'pk_', 'rapids_') */
+  /** Prefix for the key (e.g., 'sk_', 'pk_', 'A55_') */
   prefix?: string
   /** Length of the random portion (default: 32) */
   length?: number
@@ -167,6 +167,32 @@ export interface AuditEvent {
   path: string
   status: number
   auth_result: string
+}
+
+/**
+ * Usage event record.
+ */
+export interface UsageEvent {
+  id: string
+  request_id: string
+  occurred_at: string
+  actor_type: 'admin' | 'api_key'
+  actor_id: string
+  tenant_id: string
+  project_id: string
+  method: string
+  path: string
+  status: number
+}
+
+/**
+ * Usage summary for billing.
+ */
+export interface UsageSummary {
+  tenant_id: string
+  project_id: string | null
+  requests: number
+  last_request_at: string | null
 }
 
 /**

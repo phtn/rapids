@@ -20,6 +20,7 @@ import {
 import { routes } from './src/server/routes.ts'
 import { AuditService } from './src/services/audit.service.ts'
 import { ControlPlaneService } from './src/services/control-plane.service.ts'
+import { UsageService } from './src/services/usage.service.ts'
 
 type RouteHandler = (
   req: Request,
@@ -317,8 +318,18 @@ const server = Bun.serve({
             status: response.status,
             authResult: resolvedAuthResult,
           })
+          UsageService.record({
+            requestId,
+            actorType: requestContext.context.actorType,
+            actorId: requestContext.context.actorId,
+            tenantId: requestContext.context.tenantId,
+            projectId: requestContext.context.projectId,
+            method,
+            path: pathname,
+            status: response.status,
+          })
         } catch (err) {
-          console.warn(`[${requestId}] Audit logging failed`, err)
+          console.warn(`[${requestId}] Telemetry logging failed`, err)
         }
         logRequest(requestId, method, pathname, response.status, startTime)
         return response
@@ -345,8 +356,18 @@ const server = Bun.serve({
             status: response.status,
             authResult,
           })
+          UsageService.record({
+            requestId,
+            actorType: requestContext.context.actorType,
+            actorId: requestContext.context.actorId,
+            tenantId: requestContext.context.tenantId,
+            projectId: requestContext.context.projectId,
+            method,
+            path: pathname,
+            status: response.status,
+          })
         } catch (err) {
-          console.warn(`[${requestId}] Audit logging failed`, err)
+          console.warn(`[${requestId}] Telemetry logging failed`, err)
         }
       }
       logRequest(requestId, method, pathname, response.status, startTime)

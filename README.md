@@ -42,7 +42,7 @@ POST /v1/keys
 
 # Request body (all fields optional)
 {
-  "prefix": "sk_live_",     # Key prefix (default: "rapids_")
+  "prefix": "sk_live_",     # Key prefix (default: "A55_")
   "length": 32,             # Random portion length (default: 32)
   "charset": "base64url",   # Character set (default: "base64url")
   "expiresIn": 3600,        # Seconds until expiration (null = never)
@@ -181,7 +181,10 @@ Authorization: Bearer sk_live_abc123...
 GET /v1/tenants
 GET /v1/projects
 GET /v1/audit-events
+GET /v1/usage
 ```
+
+`GET /v1/usage` supports `tenant_id`, `project_id`, `from`, and `to` query parameters and returns aggregate request counts for billing and reporting.
 
 ## Authentication
 

@@ -4,6 +4,7 @@ import {
 } from '../services/api-key.service.ts'
 import { AuditService } from '../services/audit.service.ts'
 import { ControlPlaneService } from '../services/control-plane.service.ts'
+import { UsageService } from '../services/usage.service.ts'
 import type { ApiKeyConfig, ApiKeyListOptions } from '../types/index.ts'
 import { extractAuthToken } from './auth.ts'
 import type { ResolvedRequestContext } from './request-context.ts'
@@ -811,6 +812,45 @@ export const routes = {
       : 50
     const events = AuditService.list(safeLimit)
     return json({ events, count: events.length })
+  },
+
+  /**
+   * Billing-oriented usage summary.
+   */
+  'GET /v1/usage': (req: Request) => {
+    const url = new URL(req.url)
+    const tenantId = url.searchParams.get('tenant_id') ?? undefined
+    const projectId = url.searchParams.get('project_id') ?? undefined
+    const from = url.searchParams.get('from')
+    const to = url.searchParams.get('to')
+
+    const parseTime = (value: string | null): number | undefined => {
+      if (value === null) return undefined
+      const parsed = Number.parseInt(value, 10)
+      return Number.isFinite(parsed) ? parsed : undefined
+    }
+
+    const summary = UsageService.summarize({
+      tenantId,
+      projectId,
+      from: parseTime(from),
+      to: parseTime(to),
+    })
+
+    return json({ usage: summary, count: summary.length })
+  },
+
+  /**
+   * Usage summary for a single tenant.
+   */
+  'GET /v1/usage/:tenant_id': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const summary = UsageService.summarize({
+      tenantId: params.tenant_id ?? '',
+    })
+    return json({ usage: summary, count: summary.length })
   },
 }
 

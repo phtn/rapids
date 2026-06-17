@@ -28,6 +28,8 @@ describe('ControlPlaneService', () => {
     db.run('DELETE FROM tenant_rate_limit_records')
     db.run('DELETE FROM tenant_quota_policies')
     db.run('DELETE FROM api_keys')
+    db.run('DELETE FROM usage_events')
+    db.run('DELETE FROM audit_events')
     db.run('DELETE FROM projects')
     db.run('DELETE FROM tenants')
     db.run(
@@ -47,13 +49,13 @@ describe('ControlPlaneService', () => {
   test('creates, updates, and deletes a tenant', () => {
     const tenant = ControlPlaneService.createTenant({
       tenant_id: 'tenant_acme',
-      name: 'Acme',
+      name: 'Company Inc',
     })
     expect(tenant.tenant_id).toBe('tenant_acme')
 
     const updated = ControlPlaneService.updateTenant({
       tenant_id: 'tenant_acme',
-      name: 'Acme Co',
+      name: 'Company Inc',
     })
     expect(updated?.name).toBe('Acme Co')
 
@@ -63,8 +65,7 @@ describe('ControlPlaneService', () => {
 
   test('creates, updates, and deletes a project', () => {
     ControlPlaneService.createTenant({
-      tenant_id: 'tenant_acme',
-      name: 'Acme',
+      name: 'Company Inc',
     })
 
     const project = ControlPlaneService.createProject({
@@ -87,7 +88,7 @@ describe('ControlPlaneService', () => {
   test('stores and enforces tenant quota policies', () => {
     ControlPlaneService.createTenant({
       tenant_id: 'tenant_acme',
-      name: 'Acme',
+      name: 'Company Inc',
     })
 
     const policy = ControlPlaneService.upsertTenantQuotaPolicy({

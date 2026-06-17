@@ -32,6 +32,7 @@ describe('ApiKeyService', () => {
     db.run('DELETE FROM rate_limit_records')
     db.run('DELETE FROM api_keys')
     db.run('DELETE FROM audit_events')
+    db.run('DELETE FROM usage_events')
   })
 
   afterAll(() => {
@@ -42,18 +43,18 @@ describe('ApiKeyService', () => {
     test('creates an API key with default config', async () => {
       const result = await ApiKeyService.create()
 
-      expect(result.key).toStartWith('rapids_')
-      expect(result.key.length).toBe(39) // 7 prefix ("rapids_") + 32 random
+      expect(result.key).toStartWith('A55')
+      expect(result.key.length).toBe(36) // 4 prefix ("A55") + 32 random
       expect(result.record.id).toBeDefined()
       expect(result.record.tenantId).toBe('default_tenant')
       expect(result.record.projectId).toBe('default_project')
-      expect(result.record.prefix).toBe('rapids_')
+      expect(result.record.prefix).toBe('A55')
       expect(result.record.isActive).toBe(true)
       expect(result.record.expiresAt).toBeNull()
     })
 
     test('creates an API key with custom prefix', async () => {
-      const result = await ApiKeyService.create({ prefix: 'sk_test_' })
+      const result = await ApiKeyService.create({ prefix: 'sk_T_' })
 
       expect(result.key).toStartWith('sk_test_')
       expect(result.record.prefix).toBe('sk_test_')
@@ -203,16 +204,16 @@ describe('ApiKeyService', () => {
     })
 
     test('rejects invalid config', async () => {
-      await expect(ApiKeyService.create({ prefix: '' })).rejects.toBeInstanceOf(
+      expect(ApiKeyService.create({ prefix: '' })).rejects.toBeInstanceOf(
         ApiKeyConfigValidationError,
       )
-      await expect(ApiKeyService.create({ length: 1 })).rejects.toBeInstanceOf(
+      expect(ApiKeyService.create({ length: 1 })).rejects.toBeInstanceOf(
         ApiKeyConfigValidationError,
       )
-      await expect(
-        ApiKeyService.create({ rateLimit: 0 }),
-      ).rejects.toBeInstanceOf(ApiKeyConfigValidationError)
-      await expect(
+      expect(ApiKeyService.create({ rateLimit: 0 })).rejects.toBeInstanceOf(
+        ApiKeyConfigValidationError,
+      )
+      expect(
         ApiKeyService.create({
           tenantId: 'tenant_missing',
           projectId: 'project_missing',

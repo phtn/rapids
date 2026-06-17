@@ -38,7 +38,7 @@ const MAX_KEY_LENGTH = 512
 const DEFAULT_CONFIG: Required<Omit<ApiKeyConfig, 'name'>> & {
   name: string | null
 } = {
-  prefix: 'rapids_',
+  prefix: 'A55',
   length: 32,
   charset: 'base64url',
   expiresIn: null,

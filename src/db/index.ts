@@ -82,6 +82,21 @@ function initializeDatabaseSync(dbPath: string): Database {
   `)
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS usage_events (
+      id TEXT PRIMARY KEY,
+      request_id TEXT NOT NULL,
+      occurred_at INTEGER NOT NULL,
+      actor_type TEXT NOT NULL,
+      actor_id TEXT NOT NULL,
+      tenant_id TEXT NOT NULL,
+      project_id TEXT NOT NULL,
+      method TEXT NOT NULL,
+      path TEXT NOT NULL,
+      status INTEGER NOT NULL
+    )
+  `)
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS tenant_quota_policies (
       tenant_id TEXT PRIMARY KEY,
       requests_per_minute INTEGER,
