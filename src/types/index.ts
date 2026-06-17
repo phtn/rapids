@@ -133,6 +133,16 @@ export interface Tenant {
 }
 
 /**
+ * Tenant quota policy.
+ */
+export interface TenantQuotaPolicy {
+  tenant_id: string
+  requests_per_minute: number | null
+  created_at: string
+  updated_at: string
+}
+
+/**
  * Project record.
  */
 export interface Project {

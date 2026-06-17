@@ -19,6 +19,7 @@ import {
 } from './src/server/request-context.ts'
 import { routes } from './src/server/routes.ts'
 import { AuditService } from './src/services/audit.service.ts'
+import { ControlPlaneService } from './src/services/control-plane.service.ts'
 
 type RouteHandler = (
   req: Request,
@@ -284,6 +285,44 @@ const server = Bun.serve({
 
       requestContext = createAdminContext()
       authResult = 'admin'
+    }
+
+    if (requestContext?.authResult === 'api_key') {
+      const quota = ControlPlaneService.consumeTenantQuota(
+        requestContext.context.tenantId,
+      )
+      if (!quota.allowed) {
+        const resolvedAuthResult: 'admin' | 'api_key' = authResult ?? 'api_key'
+        const response = withResponseHeaders(
+          json(
+            {
+              error: 'Tenant rate limit exceeded',
+              tenantId: requestContext.context.tenantId,
+              limitPerMinute: quota.limit,
+            },
+            429,
+          ),
+          req,
+          requestId,
+        )
+        try {
+          AuditService.record({
+            requestId,
+            actorType: requestContext.context.actorType,
+            actorId: requestContext.context.actorId,
+            tenantId: requestContext.context.tenantId,
+            projectId: requestContext.context.projectId,
+            method,
+            path: pathname,
+            status: response.status,
+            authResult: resolvedAuthResult,
+          })
+        } catch (err) {
+          console.warn(`[${requestId}] Audit logging failed`, err)
+        }
+        logRequest(requestId, method, pathname, response.status, startTime)
+        return response
+      }
     }
 
     const match = matchRoute(method, pathname)

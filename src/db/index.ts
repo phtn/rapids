@@ -82,6 +82,26 @@ function initializeDatabaseSync(dbPath: string): Database {
   `)
 
   db.run(`
+    CREATE TABLE IF NOT EXISTS tenant_quota_policies (
+      tenant_id TEXT PRIMARY KEY,
+      requests_per_minute INTEGER,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL,
+      FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`
+    CREATE TABLE IF NOT EXISTS tenant_rate_limit_records (
+      tenant_id TEXT NOT NULL,
+      window_start INTEGER NOT NULL,
+      request_count INTEGER NOT NULL DEFAULT 1,
+      PRIMARY KEY (tenant_id, window_start),
+      FOREIGN KEY (tenant_id) REFERENCES tenants(tenant_id) ON DELETE CASCADE
+    )
+  `)
+
+  db.run(`
     CREATE TABLE IF NOT EXISTS api_keys (
       id TEXT PRIMARY KEY,
       key_hash TEXT NOT NULL UNIQUE,
@@ -180,6 +200,14 @@ function initializeDatabaseSync(dbPath: string): Database {
   db.run(
     'INSERT OR IGNORE INTO projects (project_id, tenant_id, name, created_at) VALUES (?, ?, ?, ?)',
     [ADMIN_PROJECT_ID, ADMIN_TENANT_ID, ADMIN_PROJECT_NAME, now],
+  )
+  db.run(
+    'INSERT OR IGNORE INTO tenant_quota_policies (tenant_id, requests_per_minute, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    [DEFAULT_TENANT_ID, null, now, now],
+  )
+  db.run(
+    'INSERT OR IGNORE INTO tenant_quota_policies (tenant_id, requests_per_minute, created_at, updated_at) VALUES (?, ?, ?, ?)',
+    [ADMIN_TENANT_ID, null, now, now],
   )
 
   return db

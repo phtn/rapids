@@ -621,6 +621,89 @@ export const routes = {
   },
 
   /**
+   * Update tenant by tenant_id.
+   */
+  'PATCH /v1/tenants/:tenant_id': async (
+    req: Request,
+    params: Record<string, string>,
+  ) => {
+    const body = await parseBody<{ name?: string }>(req)
+    const tenant = ControlPlaneService.updateTenant({
+      tenant_id: params.tenant_id ?? '',
+      name: body?.name,
+    })
+
+    if (!tenant) {
+      return error('Tenant not found', 404)
+    }
+
+    return json(tenant)
+  },
+
+  /**
+   * Delete tenant by tenant_id.
+   */
+  'DELETE /v1/tenants/:tenant_id': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const success = ControlPlaneService.deleteTenant(params.tenant_id ?? '')
+
+    if (!success) {
+      return error('Tenant not found', 404)
+    }
+
+    return json({ message: 'Tenant deleted successfully' })
+  },
+
+  /**
+   * Get tenant quota policy.
+   */
+  'GET /v1/tenants/:tenant_id/quota': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const policy = ControlPlaneService.getTenantQuotaPolicy(
+      params.tenant_id ?? '',
+    )
+
+    if (!policy) {
+      return error('Tenant quota policy not found', 404)
+    }
+
+    return json(policy)
+  },
+
+  /**
+   * Set tenant quota policy.
+   */
+  'PUT /v1/tenants/:tenant_id/quota': async (
+    req: Request,
+    params: Record<string, string>,
+  ) => {
+    const body = await parseBody<{ requests_per_minute?: number | null }>(req)
+    if (
+      body?.requests_per_minute !== null &&
+      body?.requests_per_minute !== undefined &&
+      (!Number.isInteger(body.requests_per_minute) ||
+        body.requests_per_minute <= 0)
+    ) {
+      return error('"requests_per_minute" must be a positive integer or null')
+    }
+
+    const policy = ControlPlaneService.upsertTenantQuotaPolicy({
+      tenant_id: params.tenant_id ?? '',
+      requests_per_minute: body?.requests_per_minute ?? null,
+    })
+
+    if (!policy) {
+      return error('Tenant not found', 404)
+    }
+
+    return json(policy)
+  },
+
+  /**
    * List projects.
    */
   'GET /v1/projects': (req: Request) => {
@@ -674,6 +757,47 @@ export const routes = {
     }
 
     return json(project)
+  },
+
+  /**
+   * Update project by project_id.
+   */
+  'PATCH /v1/projects/:project_id': async (
+    req: Request,
+    params: Record<string, string>,
+  ) => {
+    const body = await parseBody<{
+      name?: string
+      tenant_id?: string
+    }>(req)
+
+    const project = ControlPlaneService.updateProject({
+      project_id: params.project_id ?? '',
+      name: body?.name,
+      tenant_id: body?.tenant_id,
+    })
+
+    if (!project) {
+      return error('Project not found', 404)
+    }
+
+    return json(project)
+  },
+
+  /**
+   * Delete project by project_id.
+   */
+  'DELETE /v1/projects/:project_id': (
+    _req: Request,
+    params: Record<string, string>,
+  ) => {
+    const success = ControlPlaneService.deleteProject(params.project_id ?? '')
+
+    if (!success) {
+      return error('Project not found', 404)
+    }
+
+    return json({ message: 'Project deleted successfully' })
   },
 
   /**
